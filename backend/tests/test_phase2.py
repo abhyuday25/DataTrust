@@ -7,9 +7,10 @@ from fastapi.testclient import TestClient
 
 from app.agents import PlannerAgent, RouterAgent, SQLAgent
 from app.core import Settings, create_app
-from app.providers import OpenAICompatible, ProviderError
-from app.query_models import GeneratedSQL, PlannerResult, QueryRequest, Route, RouterResult
-from app.query_service import PipelineFailure, QueryOrchestrator, check_generated, check_plan
+from app.providers import OllamaProvider, ProviderError
+from app.query_models import GeneratedSQL, PlannerResult, Route, RouterResult, Synthesis
+from app.query_service import PipelineFailure, QueryOrchestrator, check_plan
+from app.sql_guard import SQLGuard
 from app.rag import RagIndex, catalog_documents
 
 
@@ -25,6 +26,8 @@ class FakeLLM:
             return RouterResult(route=route, requires_database=route == Route.analytics_query, requires_visualization=False, confidence=.9)
         if output is PlannerResult:
             return PlannerResult(objective='Top regions by revenue', tables_needed=[self.table], dimensions=['region'], measures=[{'field': 'revenue', 'aggregation': 'SUM'}], filters=[], joins=[], group_by=['region'], order_by=[{'field': 'total_revenue', 'direction': 'DESC'}], limit=5, assumptions=[])
+        if output is Synthesis:
+            return Synthesis(answer='North has 12.5 and South has 7.0.', findings=[], assumptions=[])
         return GeneratedSQL(sql=f'SELECT region, SUM(revenue) AS total_revenue FROM "{self.table}" GROUP BY region ORDER BY total_revenue DESC LIMIT 5', referenced_tables=[self.table], referenced_columns=[f'{self.table}.region', f'{self.table}.revenue'], assumptions=[])
 
 
@@ -47,20 +50,21 @@ def fixture(tmp_path):
     return client, app, catalog, fake, settings
 
 
-def test_end_to_end_unverified_and_schema_route(tmp_path):
+def test_end_to_end_verified_and_schema_route(tmp_path):
     client, app, catalog, fake, settings = fixture(tmp_path)
     payload = {'dataset_id': catalog.dataset.id, 'question': 'Top 5 regions by revenue'}
     response = client.post('/api/query', json=payload)
     assert response.status_code == 200, response.text
     body = response.json()
     assert body['query_id'].startswith('q_')
-    assert body['status'] == body['validation'] == 'unverified'
-    assert body['result'] is None
+    assert body['status'] == 'verified'
+    assert body['validation']['status'] == 'approved'
+    assert body['result']['row_count'] == 2
     assert 'SUM(revenue)' in body['sql']
     assert body['plan']['dimensions'] == ['region']
     assert any(d['column_name'] == 'revenue' for d in body['evidence']['documents'])
-    assert [s['name'] for s in body['metadata']['stages']] == ['routing', 'planning', 'validation', 'retrieval', 'sql_generation', 'validation']
-    assert fake.calls == ['RouterResult', 'PlannerResult', 'GeneratedSQL']
+    assert [s['name'] for s in body['metadata']['stages']] == ['routing', 'planning', 'validation', 'retrieval', 'sql_generation', 'validation', 'execution', 'result_profiling', 'synthesis', 'visualization']
+    assert fake.calls == ['RouterResult', 'PlannerResult', 'GeneratedSQL', 'Synthesis']
     manifest = Path(settings.faiss_index_path / catalog.dataset.id / 'manifest.json')
     assert json.loads(manifest.read_text())['schema_hash'] == catalog.dataset.schema_hash
     schema = client.post('/api/query', json={**payload, 'question': 'What columns are available?'})
@@ -118,12 +122,8 @@ def test_grounding_and_request_limits(tmp_path):
         check_plan(valid, catalog, 4)
     with pytest.raises(PipelineFailure, match='schema_grounding_failed'):
         check_plan(valid.model_copy(update={'tables_needed': ['secret_table']}), catalog)
-    with pytest.raises(PipelineFailure):
-        check_generated(GeneratedSQL(sql='DROP TABLE x', referenced_tables=[catalog.table.name], referenced_columns=[], assumptions=[]), catalog)
-    with pytest.raises(PipelineFailure):
-        check_generated(GeneratedSQL(sql='SELECT * FROM x', referenced_tables=['x'], referenced_columns=[], assumptions=[]), catalog)
-    with pytest.raises(PipelineFailure):
-        check_generated(GeneratedSQL(sql='SELECT * FROM secret_table', referenced_tables=[catalog.table.name], referenced_columns=[], assumptions=[]), catalog)
+    for sql in ('DROP TABLE x', 'SELECT * FROM x', 'SELECT * FROM secret_table'):
+        assert SQLGuard().validate(sql, catalog)[0].status == 'rejected'
     assert client.post('/api/query', json={'dataset_id': catalog.dataset.id, 'question': 'Revenue', 'max_rows': settings.max_result_rows + 1}).status_code == 422
     assert client.post('/api/query', json={'dataset_id': 'deadbeef', 'question': 'Revenue'}).status_code == 404
     assert client.post('/api/query', json={'dataset_id': catalog.dataset.id, 'question': '   '}).status_code == 422
@@ -133,11 +133,11 @@ def test_router_and_provider_failures(tmp_path, monkeypatch):
     client, app, catalog, fake, _ = fixture(tmp_path)
     assert RouterAgent(fake).run('Drop the sales table', 'q').route == Route.unsupported
     assert client.post('/api/query', json={'dataset_id': catalog.dataset.id, 'question': 'Drop the sales table'}).json()['status'] == 'unsupported'
-    provider = OpenAICompatible(Settings(llm_provider='openai', llm_model='example', embedding_model='example-embed', llm_api_key='secret'))
+    provider = OllamaProvider(Settings(llm_model='example', embedding_model='example-embed'))
     monkeypatch.setattr(httpx, 'post', lambda *args, **kwargs: (_ for _ in ()).throw(httpx.ReadTimeout('timeout')))
     with pytest.raises(ProviderError, match='provider_timeout'):
         provider.generate_structured('system', 'user', RouterResult)
-    monkeypatch.setattr(httpx, 'post', lambda *args, **kwargs: httpx.Response(200, json={'choices': [{'message': {'content': '{"route":"unknown"}'}}]}, request=httpx.Request('POST', 'https://api.openai.com')))
+    monkeypatch.setattr(httpx, 'post', lambda *args, **kwargs: httpx.Response(200, json={'message': {'content': '{"route":"unknown"}'}}, request=httpx.Request('POST', 'http://localhost:11434')))
     with pytest.raises(ProviderError, match='malformed_provider_output'):
         provider.generate_structured('system', 'user', RouterResult)
     app.state.query_service = None
@@ -162,17 +162,17 @@ def test_provider_structured_and_embedding_contract(monkeypatch):
     calls = []
     def response(url, **kwargs):
         calls.append((url, kwargs))
-        if url.endswith('/embeddings'):
-            body = {'data': [{'index': 1, 'embedding': [0, 1]}, {'index': 0, 'embedding': [1, 0]}]}
+        if url.endswith('/api/embed'):
+            body = {'embeddings': [[1, 0], [0, 1]]}
         else:
-            body = {'choices': [{'message': {'content': json.dumps({'route': 'analytics_query', 'requires_database': True, 'requires_visualization': False, 'confidence': .9})}}]}
+            body = {'message': {'content': json.dumps({'route': 'analytics_query', 'requires_database': True, 'requires_visualization': False, 'confidence': .9})}}
         return httpx.Response(200, json=body, request=httpx.Request('POST', url))
     monkeypatch.setattr(httpx, 'post', response)
-    provider = OpenAICompatible(Settings(llm_provider='openai', llm_model='chat', embedding_model='embed', llm_api_key='secret'))
+    provider = OllamaProvider(Settings(llm_model='chat', embedding_model='embed'))
     assert provider.generate_structured('system', 'question', RouterResult).route == Route.analytics_query
     assert provider.embed_batch(['first', 'second']) == [[1, 0], [0, 1]]
-    assert calls[0][1]['json']['response_format']['type'] == 'json_schema'
-    assert calls[0][1]['headers']['Authorization'] == 'Bearer secret'
+    assert calls[0][1]['json']['format']['type'] == 'object'
+    assert 'headers' not in calls[0][1]
 
 
 def test_orchestrator_provider_failure_is_safe(tmp_path):

@@ -1,6 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
+import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from 'recharts'
 import { api } from './api'
-import type { DatasetSchema, DatasetSummary, QueryResponse, QueryResult } from './types'
+import type { DatasetSchema, DatasetSummary, QueryResponse, QueryResult, Visualization } from './types'
+
+function Chart({ result, spec }: { result: QueryResult; spec: Visualization }) {
+  const index = (field: string | null) => result.columns.indexOf(field || '')
+  if (spec.type === 'kpi' && index(spec.value) >= 0) return <div className="kpi"><strong>{spec.value}</strong><p>{String(result.rows[0]?.[index(spec.value)] ?? '—')}</p></div>
+  const xi = index(spec.x), yi = index(spec.y)
+  if (spec.type === 'table' || xi < 0 || yi < 0) return null
+  const data = result.rows.map(row => ({ x: row[xi] as string | number, y: Number(row[yi]) })).filter(point => Number.isFinite(point.y))
+  if (!data.length) return null
+  return <div className="chart" role="img" aria-label={`${spec.type} chart of ${spec.y} by ${spec.x}`}><ResponsiveContainer width="100%" height={300}>
+    {spec.type === 'bar' ? <BarChart data={data}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="x" /><YAxis /><Tooltip /><Bar dataKey="y" fill="steelblue" /></BarChart>
+      : spec.type === 'line' ? <LineChart data={data}><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="x" /><YAxis /><Tooltip /><Line dataKey="y" stroke="steelblue" /></LineChart>
+      : <ScatterChart><CartesianGrid strokeDasharray="3 3" /><XAxis dataKey="x" type="number" /><YAxis dataKey="y" type="number" /><Tooltip /><Scatter data={data} fill="steelblue" /></ScatterChart>}
+  </ResponsiveContainer></div>
+}
 
 function ResultTable({ result }: { result: QueryResult }) {
   if (result.rows.length === 0) return <p>No rows returned.</p>
@@ -60,7 +75,7 @@ export function App() {
     setQueryError('')
     setQuery(null)
     const run = ++queryRun.current
-    try { const response = await api.query({ dataset_id: selected, question: question.trim(), max_rows: 1000 }); if (run === queryRun.current) setQuery(response) }
+    try { const response = await api.query({ dataset_id: selected, question: question.trim(), max_rows: 1000, visualize: true }); if (run === queryRun.current) setQuery(response) }
     catch (e) { if (run === queryRun.current) setQueryError(e instanceof Error ? e.message : 'Query failed') }
     finally { if (run === queryRun.current) setQueryBusy(false) }
   }
@@ -85,7 +100,7 @@ export function App() {
     {schema && <section aria-labelledby="query-heading">
       <h2 id="query-heading">Ask about {schema.dataset.name}</h2>
       <label>Question<textarea value={question} onChange={e => setQuestion(e.target.value)} maxLength={2000} placeholder="What were the top regions by revenue?" /></label>
-      <button disabled={queryBusy || !question.trim()} onClick={() => void submitQuery()}>Generate grounded SQL</button>
+      <button disabled={queryBusy || !question.trim()} onClick={() => void submitQuery()}>Run verified query</button>
       {queryBusy && <p role="status">Running the query pipeline…</p>}
       {queryError && <p role="alert" className="error">{queryError}</p>}
       {query && <div aria-live="polite">
@@ -93,9 +108,12 @@ export function App() {
         {query.route && <p>Route: {query.route.route}</p>}
         {query.error && <p role="alert" className="error">{query.error.message}</p>}
         {query.answer && <p>{query.answer}</p>}
+        {query.metadata.repair_attempts > 0 && <p>Query repaired after {query.metadata.repair_attempts} {query.metadata.repair_attempts === 1 ? 'retry' : 'retries'}.</p>}
         {query.plan?.assumptions.length ? <p>Assumptions: {query.plan.assumptions.join('; ')}</p> : null}
-        {query.sql && <details open><summary>{query.status === 'unverified' ? 'Unverified SQL — not executed' : 'Generated SQL'}</summary><pre>{query.sql}</pre></details>}
-        {query.result ? <ResultTable result={query.result} /> : query.sql && <p>No result table: this SQL has not been executed.</p>}
+        {query.validation && <details open><summary>SQL validation: {query.validation.status}</summary><ul>{query.validation.checks.map((c, i) => <li key={i}>{c.passed ? '✓' : '✗'} {c.name}</li>)}</ul>{query.validation.reasons.map((r, i) => <p key={i}>{r.message}</p>)}</details>}
+        {query.sql && <details><summary>{query.status === 'verified' ? 'Executed SQL' : 'Blocked SQL'}</summary><pre>{query.sql}</pre></details>}
+        {query.result && query.visualization && <Chart result={query.result} spec={query.visualization} />}
+        {query.result && <><ResultTable result={query.result} />{query.result.truncated && <p>Results truncated at the requested row limit.</p>}</>}
         {query.evidence && <details><summary>Retrieved evidence ({query.evidence.documents.length})</summary><ul>{query.evidence.documents.map(d => <li key={d.document_id}><strong>{d.object_type}: {d.column_name || d.table_name}</strong> · score {d.score} · {d.content}</li>)}</ul></details>}
         <details><summary>Pipeline stages ({query.metadata.latency_ms} ms)</summary><ol>{query.metadata.stages.map((s, i) => <li key={i}>{s.name}: {s.duration_ms} ms</li>)}</ol></details>
       </div>}

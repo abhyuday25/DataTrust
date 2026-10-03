@@ -15,6 +15,7 @@ def test_csv_upload_catalog_restart_and_version(tmp_path):
     csv = b'order_id,region,revenue\n1,North,12.5\n2,South,\n'
     with client(tmp_path) as api:
         assert api.get('/api/health').json() == {'status': 'ok'}
+        assert api.get('/api/readiness').json()['status'] == 'unavailable'
         response = api.post('/api/datasets/upload', files={'file': ('sales.csv', csv)})
         assert response.status_code == 201, response.text
         body = response.json()

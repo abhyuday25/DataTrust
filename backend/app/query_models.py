@@ -101,7 +101,7 @@ class QueryRequest(StrictModel):
 
 
 class PipelineStage(StrictModel):
-    name: Literal['routing', 'planning', 'retrieval', 'sql_generation', 'validation', 'execution', 'completed', 'failed']
+    name: Literal['routing', 'planning', 'retrieval', 'sql_generation', 'validation', 'execution', 'repair', 'result_profiling', 'synthesis', 'visualization', 'completed', 'failed']
     duration_ms: float
 
 
@@ -109,6 +109,7 @@ class QueryMetadata(StrictModel):
     latency_ms: float
     stages: list[PipelineStage]
     cache_hit: bool = False
+    repair_attempts: int = 0
 
 
 class QueryError(StrictModel):
@@ -116,15 +117,52 @@ class QueryError(StrictModel):
     message: str
 
 
+class ResultColumnProfile(StrictModel):
+    name: str
+    type: str
+    role: Literal['dimension', 'measure', 'temporal']
+    distinct_count: int
+    null_count: int
+    minimum: float | None = None
+    maximum: float | None = None
+
+
+class ResultProfile(StrictModel):
+    row_count: int
+    columns: list[ResultColumnProfile]
+
+
+class Visualization(StrictModel):
+    type: Literal['kpi', 'bar', 'line', 'scatter', 'table']
+    x: str | None = None
+    y: str | None = None
+    value: str | None = None
+
+
+class Synthesis(StrictModel):
+    answer: str
+    findings: list[str]
+    assumptions: list[str]
+
+
 class QueryResponse(StrictModel):
     query_id: str
-    status: Literal['unverified', 'completed', 'failed', 'needs_context', 'unsupported']
+    status: Literal['verified', 'completed', 'failed', 'needs_context', 'unsupported']
     route: RouterResult | None = None
     plan: PlannerResult | None = None
     answer: str | None = None
     sql: str | None = None
-    validation: Literal['unverified', 'grounding_failed'] | None = None
-    result: None = None  # Phase 2 never executes generated SQL.
+    validation: 'ValidationResult | None' = None
+    result: 'ExecutionResult | None' = None
+    result_profile: ResultProfile | None = None
+    visualization: Visualization | None = None
+    findings: list[str] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
     evidence: RetrievalResult | None = None
     error: QueryError | None = None
     metadata: QueryMetadata
+
+
+from app.executor import ExecutionResult
+from app.sql_guard import ValidationResult
+QueryResponse.model_rebuild()

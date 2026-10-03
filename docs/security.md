@@ -1,0 +1,9 @@
+# Phase 3 security boundary
+
+Trusted ingestion uses `Database.connection()` to create uploaded dataset tables. Untrusted model SQL passes `SQLGuard.validate()` and then `ReadOnlyExecutor.execute()` only. Initial and repaired SQL use the same guard. DDL/DML, multiple statements, unauthorized tables and columns, external table functions, unknown UDFs, attached schemas, and file paths are rejected. DuckDB analytical connections are read-only and have external access disabled.
+
+Execution errors are mapped to safe codes. Repair receives a code rather than a raw database error; security rejection never triggers repair. The executor runs in a daemon thread and calls `interrupt()` after `QUERY_TIMEOUT_SECONDS`. Native operations that ignore cancellation may continue briefly; the response still fails closed. Row results are capped server-side. Liveness `/api/health` does not require Ollama.
+
+The UI renders typed chart specs and text only. It never executes server-supplied code. Natural-language synthesis is bounded to executed results and screens numerical claims, but semantic truth of every sentence is not formally proven. Inspect the SQL, validation and rows for consequential use. Authentication and dataset ownership controls are planned for Phase 4; do not expose this development app to untrusted multi-user traffic.
+
+Threat inputs include the user question, retrieved catalog descriptions, model JSON, generated SQL and repaired SQL. Prompts can guide agents but never approve execution. The statement allow-list is one parsed SELECT; table and column references are checked against the selected dataset. The adversarial suite covers DDL/DML, external file functions and URLs, system tables, cross-dataset names, nested unsafe operations, and malicious repairs. **No Repair Agent may bypass SQL validation.**

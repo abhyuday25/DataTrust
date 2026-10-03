@@ -1,0 +1,11 @@
+# SQL policy
+
+SQLGlot 28 parses DuckDB SQL into an AST. `SQLGuard.validate()` requires exactly one root `SELECT`; CTE bodies are traversed, and set operations are currently denied. The selected dataset table is the only base table allowed. Qualified database/schema names, internal tables, path tables, and table functions are denied. SQLGlot's column qualifier validates base columns and aliases against the catalog. Unknown anonymous functions are denied except a small analytics allow-list.
+
+The guard derives references from the AST, not the model's declared references. A passing guard returns an `ApprovedQuery`; the executor refuses arbitrary strings. SQLGlot is a parser, not a perfect semantic verifier. The executor adds a read-only DuckDB connection with `enable_external_access=false` as defense in depth. Policy extensions should add regression cases for both permitted analytics and adversarial SQL.
+
+Result delivery is capped by wrapping approved SQL with `LIMIT max_rows + 1` and reporting `truncated` when an extra row is found. The cap does not prove every expensive query will finish quickly; timeout calls DuckDB's interrupt mechanism.
+
+CTE definitions are traversed with the outer query; a CTE name is not treated as a base table, while its underlying base references must match the selected dataset. SQLGlot qualification resolves ordinary table aliases, CTE output aliases, aggregate aliases, and `ORDER BY` aliases. Unknown or ambiguous columns are rejected. The policy permits familiar scalar and aggregate functions, but unknown anonymous functions fail closed. Valid `SELECT` with a common table expression, `CASE`, `EXTRACT`, grouping, `HAVING` and ordering are covered by tests. Set operations and multi-table joins are currently outside the supported single-dataset policy.
+
+Validation reasons include `SQL_SYNTAX_ERROR`, `MULTI_STATEMENT`, `FORBIDDEN_STATEMENT`, `UNAUTHORIZED_TABLE`, `UNAUTHORIZED_COLUMN`, `EXTERNAL_ACCESS`, and `FORBIDDEN_FUNCTION`. The result contains named checks plus AST-derived table and column references. The SQLGlot parser may reject valid DuckDB syntax it does not recognize; that is a safe false block rather than approval. Parser upgrades need both security and valid-query regression tests.

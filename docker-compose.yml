@@ -7,11 +7,12 @@ services:
       DATA_DIR: /data/uploads
       FAISS_INDEX_PATH: /storage/faiss
       CORS_ORIGINS: http://localhost:5173,http://localhost:8080
-      LLM_PROVIDER: ${LLM_PROVIDER:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
       LLM_MODEL: ${LLM_MODEL:-}
-      LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      OLLAMA_BASE_URL: ${OLLAMA_DOCKER_BASE_URL:-http://host.docker.internal:11434}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./storage:/storage
       - ./data:/data

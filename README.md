@@ -1,12 +1,13 @@
 # DataTrust
 
-DataTrust is a foundation for verified natural-language analytics. It enables users to ask questions about their datasets through an intuitive interface while maintaining security and control.
+DataTrust runs natural-language analytics over uploaded CSV and Parquet datasets. A local Ollama model proposes SQL; an AST guard decides whether it may execute in read-only DuckDB.
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 - Python 3.12+
 - Node 22+
+- [Ollama](https://ollama.com/) with a chat model and an embedding model installed locally
 
 ### Local Development
 
@@ -14,7 +15,7 @@ DataTrust is a foundation for verified natural-language analytics. It enables us
 ```bash
 cd backend
 python -m pip install -r requirements.txt
-cp ../../.env.example .env  # Set your AI provider credentials
+cp ../.env.example .env  # Set LLM_MODEL and EMBEDDING_MODEL
 python -m uvicorn app.main:app --reload
 ```
 
@@ -28,7 +29,7 @@ npm run dev
 
 #### Using Docker Compose
 ```bash
-# Create .env file in root directory with your AI provider credentials
+# Create .env in the root and set the local Ollama models
 docker compose up --build
 # Open http://localhost:8080
 ```
@@ -54,29 +55,32 @@ The first query automatically builds a FAISS index for the dataset. Subsequent q
 ### Phase 2: Query Processing
 - Typed Router and Planner
 - Retrieval and SQL generation
-- **Important**: Generated SQL is returned unverified and is never executed
+- Generated SQL is a proposal and has no execution authority
 
-### Phase 3: Security (Future)
-- Full SQL Guard
-- Read-only executor
+### Phase 3: Verified Analytics
+- SQLGlot DuckDB AST guard, catalog table and column checks, and default-deny function policy
+- Read-only DuckDB executor with disabled external access, timeout and row cap
+- Up to two guarded repairs after repairable execution errors
+- Result profiling, grounded synthesis, and deterministic charts
 
 ## ⚙️ AI Configuration
 
-Set these environment variables in `backend/.env`:
+Set these environment variables in `backend/.env` (or root `.env` for Docker Compose). The model names below are examples; install and select models available in your local Ollama instance:
 
 ```env
-LLM_PROVIDER=openai              # or openai_compatible
-LLM_MODEL=gpt-4                  # Your model choice
-LLM_API_KEY=your_api_key         # Your API key
-EMBEDDING_MODEL=text-embedding-3-small  # Embedding model
-LLM_BASE_URL=https://api.openai.com/v1  # Custom endpoint if needed
+LLM_PROVIDER=ollama
+LLM_MODEL=<installed-chat-model>
+EMBEDDING_MODEL=<installed-embedding-model>
+OLLAMA_BASE_URL=http://localhost:11434
 LLM_TIMEOUT_SECONDS=30           # Request timeout
 RAG_TOP_K=5                      # Number of retrieval results
 ```
 
 **Note**: 
-- Without credentials, dataset features work but `/api/query` returns 503
+- Without configured model names, dataset features work but `/api/query` returns 503
 - Tests use deterministic fake providers (no paid calls)
+- Check installed models with `ollama list`; use `ollama pull <model>` to install one
+- Start the server with `ollama serve` if it is not already running
 
 ## 🔒 Security & Scope
 
@@ -84,13 +88,19 @@ RAG_TOP_K=5                      # Number of retrieval results
 - Validates selected datasets and questions
 - Routes intent and generates SQL plans
 - Retrieves evidence from FAISS indices
-- Returns SQL as a separate typed object
+- Guards generated and repaired SQL before any analytical execution
+- Executes approved SQL on a dedicated read-only connection
+- Returns typed validation, rows, profiling and visualization metadata
 - Answers schema questions from metadata
 
-### What DataTrust Doesn't Do:
-- **Execute generated SQL**
-- Return result rows or synthesized answers
-- Parse or approve SQL for execution
+### Current limits
+- One selected uploaded table per analytical query; external table functions, arbitrary UDFs and set operations are denied
+- The thread cancellation timeout interrupts DuckDB where possible; a native operation that ignores interruption can outlive the response briefly
+- Synthesis checks numerical claims, but cannot prove every natural-language statement; inspect the returned rows and SQL for important decisions
+
+### Planned Phase 4
+
+Semantic cache, conversation follow-ups, query history, authentication, evaluation and production deployment work are planned for Phase 4.
 
 ### Security Features:
 - Stream uploads with size limits (`MAX_UPLOAD_MB`)
@@ -101,7 +111,7 @@ RAG_TOP_K=5                      # Number of retrieval results
 ### Important Notes:
 - DuckDB and uploaded files must persist together
 - Profiling uses max 10,000 rows per column
-- Queries to external providers include bounded metadata
+- Local Ollama receives bounded metadata and result rows
 - **Do not expose directly to untrusted internet traffic**
 
 ## 🧪 Testing & Documentation
@@ -126,3 +136,7 @@ See detailed docs for:
 - [Query Pipeline](docs/query-pipeline.md)
 - [API Reference](docs/api.md)
 - [Development Guide](docs/development.md)
+- [SQL Policy](docs/sql-policy.md)
+- [Security](docs/security.md)
+- [Local LLM Provider](docs/llm-providers.md)
+- [Repair Loop](docs/repair-loop.md)

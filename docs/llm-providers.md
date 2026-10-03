@@ -1,0 +1,7 @@
+# Local Ollama provider
+
+Set `LLM_PROVIDER=ollama`, `LLM_MODEL` to an installed chat model, `EMBEDDING_MODEL` to an installed embedding model, and `OLLAMA_BASE_URL` to the local server (default `http://localhost:11434`). `ollama list` shows installed models; `ollama pull <model>` installs one. Docker Compose uses `host.docker.internal:11434` for a host Ollama service; set `OLLAMA_DOCKER_BASE_URL` to override that container URL. No API key is needed.
+
+The provider calls `/api/chat` with a JSON schema and zero temperature, then validates the returned content with Pydantic. Embeddings use `/api/embed`. Network timeout, unavailable models and malformed output become safe provider codes. Unit tests mock HTTP and require no Ollama server. For a real smoke test, configure local models, start Ollama and the backend, upload `data/sample_sales.csv`, then submit `POST /api/query` with that dataset ID and an analytical question.
+
+Agents depend on the `LLMClient` protocol; FAISS depends on `EmbeddingProvider`. To add another provider, implement those methods and wire it in `create_app()` without changing the agents. The normalized codes are `provider_unavailable`, `provider_timeout`, `model_unavailable`, `malformed_provider_output`, and `invalid_embedding`. Fake providers in tests make the normal suite independent of Ollama. The optional live smoke test is manual and was not run in this environment.

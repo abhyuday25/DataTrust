@@ -18,20 +18,16 @@ class Settings(BaseSettings):
     data_dir: Path = Path('./data/uploads')
     max_upload_mb: int = Field(default=100, gt=0)
     cors_origins: str = 'http://localhost:5173'
-    llm_provider: str = ''
+    llm_provider: str = 'ollama'
     llm_model: str = ''
-    llm_api_key: str = ''
-    llm_base_url: str = 'https://api.openai.com/v1'
+    ollama_base_url: str = 'http://localhost:11434'
     llm_timeout_seconds: int = Field(default=30, gt=0)
     embedding_model: str = ''
     rag_top_k: int = Field(default=5, ge=1, le=20)
     faiss_index_path: Path = Path('./storage/faiss')
-    max_result_rows: int = 10000
-    query_timeout_seconds: int = 10
-    cache_similarity_threshold: float = 0.92
-    cache_ttl_seconds: int = 3600
-    max_repair_attempts: int = 2
-    jwt_secret: str = ''
+    max_result_rows: int = Field(default=10000, ge=1)
+    query_timeout_seconds: int = Field(default=10, ge=1)
+    max_repair_attempts: int = Field(default=2, ge=0, le=2)
 
 
 class ApiError(Exception):
@@ -43,7 +39,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from app.db import Database
     from app.routes import router
     from app.service import DatasetService
-    from app.providers import OpenAICompatible, ProviderError
+    from app.providers import OllamaProvider, ProviderError
     from app.agents import RouterAgent, PlannerAgent, SQLAgent
     from app.rag import RagIndex
     from app.query_service import QueryOrchestrator
@@ -57,7 +53,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.datasets = DatasetService(db, settings)
     app.state.query_service = None
     try:
-        provider = OpenAICompatible(settings)
+        provider = OllamaProvider(settings)
         app.state.query_service = QueryOrchestrator(app.state.datasets, RouterAgent(provider), PlannerAgent(provider), RagIndex(settings.faiss_index_path, provider), SQLAgent(provider), settings)
     except ProviderError:
         pass  # Dataset management remains available without AI credentials.

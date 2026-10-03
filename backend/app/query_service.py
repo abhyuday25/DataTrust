@@ -1,18 +1,20 @@
-"""Coordinates Phase 2 stages. Generated SQL stops at the unverified boundary."""
+"""Coordinates the verified query pipeline."""
 
 import json
 import logging
-import re
 from time import perf_counter
 from uuid import uuid4
 
-from app.agents import PlannerAgent, RouterAgent, SQLAgent
+from app.agents import PlannerAgent, RouterAgent, SQLAgent, RepairAgent, Synthesizer
 from app.core import ApiError, Settings
+from app.executor import ExecutionError, ReadOnlyExecutor
 from app.providers import ProviderError
 from app.query_models import PipelineStage, QueryError, QueryMetadata, QueryRequest, QueryResponse, Route
 from app.rag import RagIndex, context_for
+from app.result_ops import profile_result, plan_visualization
 from app.schemas import DatasetSchema
 from app.service import DatasetService
+from app.sql_guard import SQLGuard
 
 
 class PipelineFailure(Exception):
@@ -32,28 +34,14 @@ def check_plan(plan, catalog: DatasetSchema, max_rows: int | None = None):
         raise PipelineFailure('plan_limit_exceeded', 'Plan exceeds requested row limit')
 
 
-def check_generated(generated, catalog: DatasetSchema):
-    table = catalog.table.name
-    columns = {c.name for c in catalog.table.columns}
-    sql = generated.sql.strip()
-    if not re.match(r'^(SELECT|WITH)\b', sql, re.I) or ';' in sql.rstrip(';') or '```' in sql:
-        raise PipelineFailure('sql_generation_failed', 'Generated SQL is not one analytical statement')
-    if not generated.referenced_tables or any(name != table for name in generated.referenced_tables):
-        raise PipelineFailure('schema_grounding_failed', 'SQL declares unavailable tables')
-    for source in re.findall(r'\b(?:FROM|JOIN)\s+"?([A-Za-z_][A-Za-z0-9_]*)"?', sql, re.I):
-        if source != table:
-            raise PipelineFailure('schema_grounding_failed', 'SQL text refers to an unavailable table')
-    for reference in generated.referenced_columns:
-        parts = reference.split('.', 1)
-        if len(parts) != 2 or parts[0] != table or parts[1] not in columns:
-            raise PipelineFailure('schema_grounding_failed', 'SQL declares unavailable columns')
-    # This is only a grounding check, not a SQL parser or permission to execute.
-
-
 class QueryOrchestrator:
     def __init__(self, datasets: DatasetService, router: RouterAgent, planner: PlannerAgent, retriever: RagIndex, sql_agent: SQLAgent, settings: Settings):
         self.datasets, self.router, self.planner = datasets, router, planner
         self.retriever, self.sql_agent, self.settings = retriever, sql_agent, settings
+        self.guard = SQLGuard()
+        self.executor = ReadOnlyExecutor(settings.duckdb_path, settings.query_timeout_seconds)
+        self.repair = RepairAgent(sql_agent.llm)
+        self.synthesizer = Synthesizer(sql_agent.llm)
 
     def run(self, request: QueryRequest, request_id: str | None = None) -> QueryResponse:
         if request.max_rows > self.settings.max_result_rows:
@@ -65,6 +53,7 @@ class QueryOrchestrator:
         stages: list[PipelineStage] = []
         started = perf_counter()
         response = QueryResponse(query_id=query_id, status='failed', metadata=QueryMetadata(latency_ms=0, stages=stages))
+        repair_attempts = 0
 
         def stage(name, action):
             begin = perf_counter()
@@ -83,6 +72,7 @@ class QueryOrchestrator:
         try:
             route = stage('routing', lambda: self.router.run(request.question, query_id))
             response.route = route
+            logging.info(json.dumps({'event': 'query_route', 'query_id': query_id, 'dataset_id': request.dataset_id, 'route': route.route.value}))
             if route.route == Route.follow_up:
                 response.status = 'needs_context'
                 response.error = QueryError(code='conversation_unavailable', message='Follow-up questions need prior conversation context')
@@ -106,17 +96,34 @@ class QueryOrchestrator:
                 logging.info(json.dumps({'event': 'query_evidence', 'query_id': query_id, 'dataset_id': request.dataset_id, 'documents': [{'id': d.document_id, 'score': d.score} for d in evidence.documents]}))
                 generated = stage('sql_generation', lambda: self.sql_agent.run(request.question, plan, context_for(evidence), min(request.max_rows, self.settings.max_result_rows), query_id))
                 response.sql = generated.sql
-                stage('validation', lambda: check_generated(generated, catalog))
-                response.validation = 'unverified'
-                response.status = 'unverified'
+                for attempt in range(self.settings.max_repair_attempts + 1):
+                    validation, approved = stage('validation', lambda: self.guard.validate(response.sql, catalog))
+                    response.validation = validation
+                    logging.info(json.dumps({'event': 'query_validation', 'query_id': query_id, 'dataset_id': request.dataset_id, 'attempt': attempt, 'status': validation.status, 'reason_codes': [reason.code for reason in validation.reasons]}))
+                    if approved is None:
+                        raise PipelineFailure(validation.reasons[0].code, validation.reasons[0].message)
+                    try:
+                        result = stage('execution', lambda: self.executor.execute(approved, min(request.max_rows, self.settings.max_result_rows)))
+                        break
+                    except ExecutionError as exc:
+                        if not exc.repairable or attempt == self.settings.max_repair_attempts:
+                            raise PipelineFailure(exc.code, 'Query execution failed safely') from None
+                        repair_attempts += 1
+                        logging.info(json.dumps({'event': 'query_repair', 'query_id': query_id, 'dataset_id': request.dataset_id, 'attempt': repair_attempts, 'error_code': exc.code}))
+                        generated = stage('repair', lambda: self.repair.run(request.question, plan, context_for(evidence), response.sql, exc.code, repair_attempts))
+                        response.sql = generated.sql
+                response.result = result
+                response.result_profile = stage('result_profiling', lambda: profile_result(result))
+                synthesis = stage('synthesis', lambda: self.synthesizer.run(request.question, plan, response.sql, result, response.result_profile))
+                response.answer, response.findings, response.assumptions = synthesis.answer, synthesis.findings, synthesis.assumptions
+                response.visualization = stage('visualization', lambda: plan_visualization(result, response.result_profile, request.visualize or route.requires_visualization))
+                response.status = 'verified'
         except ProviderError as exc:
             response.error = QueryError(code=exc.code, message='AI provider is unavailable or returned invalid output')
         except PipelineFailure as exc:
-            if exc.code == 'schema_grounding_failed':
-                response.validation = 'grounding_failed'
             response.error = QueryError(code=exc.code, message=exc.message)
         except (OSError, RuntimeError, ValueError):
             response.error = QueryError(code='retrieval_unavailable', message='Retrieval is unavailable')
-        response.metadata = QueryMetadata(latency_ms=round((perf_counter() - started) * 1000, 2), stages=stages)
+        response.metadata = QueryMetadata(latency_ms=round((perf_counter() - started) * 1000, 2), stages=stages, repair_attempts=repair_attempts)
         logging.info(json.dumps({'event': 'query_finished', 'query_id': query_id, 'request_id': request_id, 'dataset_id': request.dataset_id, 'status': response.status, 'latency_ms': response.metadata.latency_ms}))
         return response

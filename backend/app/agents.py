@@ -2,7 +2,7 @@ import json
 import re
 
 from app.providers import LLMClient
-from app.query_models import GeneratedSQL, PlannerResult, RouterResult, Route
+from app.query_models import GeneratedSQL, PlannerResult, RouterResult, Route, Synthesis
 from app.schemas import DatasetSchema
 
 
@@ -53,3 +53,32 @@ class SQLAgent:
     def run(self, question: str, plan: PlannerResult, evidence: str, max_rows: int, query_id: str) -> GeneratedSQL:
         payload = {'question': question, 'plan': plan.model_dump(), 'evidence': evidence[:12000], 'max_rows': max_rows}
         return self.llm.generate_structured(SQL_RULES, json.dumps(payload), GeneratedSQL)
+
+
+class RepairAgent:
+    def __init__(self, llm: LLMClient):
+        self.llm = llm
+
+    def run(self, question: str, plan: PlannerResult, evidence: str, failed_sql: str, error_code: str, attempt: int) -> GeneratedSQL:
+        payload = {'question': question, 'plan': plan.model_dump(), 'evidence': evidence[:12000],
+                   'failed_sql': failed_sql, 'error_code': error_code, 'attempt': attempt}
+        return self.llm.generate_structured('Repair the DuckDB SELECT using only the supplied catalog. Return GeneratedSQL JSON. Never execute or approve SQL.', json.dumps(payload), GeneratedSQL)
+
+
+class Synthesizer:
+    def __init__(self, llm: LLMClient):
+        self.llm = llm
+
+    def run(self, question: str, plan: PlannerResult, sql: str, result, profile) -> Synthesis:
+        if not result.rows:
+            return Synthesis(answer='The query returned no rows.', findings=[], assumptions=plan.assumptions)
+        payload = {'question': question, 'plan': plan.model_dump(), 'executed_sql': sql,
+                   'columns': result.columns, 'rows': result.rows[:100], 'row_count': result.row_count,
+                   'truncated': result.truncated, 'profile': profile.model_dump()}
+        answer = self.llm.generate_structured('Explain only the executed result values. Do not invent numbers, categories, or trends. State truncation. Return Synthesis JSON.', json.dumps(payload, default=str), Synthesis)
+        # Numerical claims absent from the executed result are rejected; a deterministic summary is safer.
+        allowed = {str(v) for row in result.rows for v in row if isinstance(v, (int, float))}
+        claims = set(__import__('re').findall(r'(?<![A-Za-z])\d+(?:\.\d+)?', answer.answer + ' '.join(answer.findings)))
+        if claims - allowed:
+            return Synthesis(answer=f'Query returned {result.row_count} rows' + (' (truncated).' if result.truncated else '.'), findings=[], assumptions=plan.assumptions)
+        return answer

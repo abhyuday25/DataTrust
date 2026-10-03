@@ -25,46 +25,44 @@ class EmbeddingProvider(Protocol):
     def embed_batch(self, texts: list[str]) -> list[list[float]]: ...
 
 
-class OpenAICompatible:
+class OllamaProvider:
     def __init__(self, settings: Settings):
-        if settings.llm_provider not in ('openai', 'openai_compatible') or not settings.llm_model or not settings.embedding_model or not settings.llm_api_key:
+        if settings.llm_provider != 'ollama' or not settings.llm_model or not settings.embedding_model:
             raise ProviderError('provider_unavailable')
         self.model = settings.embedding_model
         self.chat_model = settings.llm_model
-        self.base_url = settings.llm_base_url.rstrip('/')
-        self.api_key = settings.llm_api_key
+        self.base_url = settings.ollama_base_url.rstrip('/')
         self.timeout = settings.llm_timeout_seconds
 
     def _post(self, path: str, payload: dict) -> dict:
         try:
-            response = httpx.post(self.base_url + path, json=payload, headers={'Authorization': f'Bearer {self.api_key}'}, timeout=self.timeout)
+            response = httpx.post(self.base_url + path, json=payload, timeout=self.timeout)
+            if response.status_code == 404:
+                raise ProviderError('model_unavailable')
             response.raise_for_status()
             return response.json()
         except httpx.TimeoutException:
             raise ProviderError('provider_timeout') from None
         except (httpx.HTTPError, ValueError):
-            raise ProviderError('provider_failure') from None
+            raise ProviderError('provider_unavailable') from None
 
     def generate_structured(self, system: str, user: str, output: type[T]) -> T:
-        data = self._post('/chat/completions', {
-            'model': self.chat_model,
+        data = self._post('/api/chat', {
+            'model': self.chat_model, 'stream': False,
             'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': user}],
-            'response_format': {'type': 'json_schema', 'json_schema': {'name': output.__name__, 'schema': output.model_json_schema(), 'strict': False}},
+            'format': output.model_json_schema(), 'options': {'temperature': 0},
         })
         try:
-            return output.model_validate_json(data['choices'][0]['message']['content'])
+            return output.model_validate_json(data['message']['content'])
         except (KeyError, IndexError, TypeError, ValidationError, ValueError):
             raise ProviderError('malformed_provider_output') from None
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        data = self._post('/embeddings', {'model': self.model, 'input': texts})
+        data = self._post('/api/embed', {'model': self.model, 'input': texts})
         try:
-            ordered = sorted(data['data'], key=lambda item: item['index'])
-            if [item['index'] for item in ordered] != list(range(len(texts))):
-                raise ValueError
-            vectors = [[float(x) for x in item['embedding']] for item in ordered]
+            vectors = [[float(x) for x in row] for row in data['embeddings']]
             if len(vectors) != len(texts) or not vectors[0] or any(len(v) != len(vectors[0]) or not all(math.isfinite(x) for x in v) for v in vectors):
                 raise ValueError
             return vectors

@@ -33,7 +33,7 @@ test('submits a typed natural-language query', async () => {
     assert.equal(url, '/api/query')
     assert.equal(options.method, 'POST')
     assert.equal(JSON.parse(options.body).question, 'Top regions by revenue')
-    return { ok: true, json: async () => ({ status: 'unverified', result: null }) }
+    return { ok: true, json: async () => ({ status: 'verified', result: { columns: [], rows: [], row_count: 0, truncated: false, duration_ms: 1 } }) }
   }
-  assert.equal((await api.query({ dataset_id: 'abc', question: 'Top regions by revenue' })).status, 'unverified')
+  assert.equal((await api.query({ dataset_id: 'abc', question: 'Top regions by revenue' })).status, 'verified')
 })
