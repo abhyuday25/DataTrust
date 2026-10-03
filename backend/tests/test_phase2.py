@@ -133,7 +133,7 @@ def test_router_and_provider_failures(tmp_path, monkeypatch):
     client, app, catalog, fake, _ = fixture(tmp_path)
     assert RouterAgent(fake).run('Drop the sales table', 'q').route == Route.unsupported
     assert client.post('/api/query', json={'dataset_id': catalog.dataset.id, 'question': 'Drop the sales table'}).json()['status'] == 'unsupported'
-    provider = OllamaProvider(Settings(llm_model='example', embedding_model='example-embed'))
+    provider = OllamaProvider(Settings(llm_provider='ollama', llm_model='example', embedding_model='example-embed'))
     monkeypatch.setattr(httpx, 'post', lambda *args, **kwargs: (_ for _ in ()).throw(httpx.ReadTimeout('timeout')))
     with pytest.raises(ProviderError, match='provider_timeout'):
         provider.generate_structured('system', 'user', RouterResult)
@@ -168,7 +168,7 @@ def test_provider_structured_and_embedding_contract(monkeypatch):
             body = {'message': {'content': json.dumps({'route': 'analytics_query', 'requires_database': True, 'requires_visualization': False, 'confidence': .9})}}
         return httpx.Response(200, json=body, request=httpx.Request('POST', url))
     monkeypatch.setattr(httpx, 'post', response)
-    provider = OllamaProvider(Settings(llm_model='chat', embedding_model='embed'))
+    provider = OllamaProvider(Settings(llm_provider='ollama', llm_model='chat', embedding_model='embed'))
     assert provider.generate_structured('system', 'question', RouterResult).route == Route.analytics_query
     assert provider.embed_batch(['first', 'second']) == [[1, 0], [0, 1]]
     assert calls[0][1]['json']['format']['type'] == 'object'

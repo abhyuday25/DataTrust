@@ -114,7 +114,7 @@ def test_repair_revalidated_and_bounded(tmp_path):
 
 
 def test_ollama_failure_codes(monkeypatch):
-    provider = OllamaProvider(Settings(llm_model='local-chat', embedding_model='local-embed'))
+    provider = OllamaProvider(Settings(llm_provider='ollama', llm_model='local-chat', embedding_model='local-embed'))
     def response(status, body):
         return httpx.Response(status, json=body, request=httpx.Request('POST', 'http://localhost:11434/api/chat'))
     for reply, code in ((response(404, {'error': 'missing'}), 'model_unavailable'),
