@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from 'recharts'
 import { api } from './api'
-import type { DatasetSchema, DatasetSummary, QueryResponse, QueryResult, Visualization } from './types'
+import type { DatasetSchema, DatasetSummary, HistoryItem, QueryResponse, QueryResult, Visualization } from './types'
 
 function Chart({ result, spec }: { result: QueryResult; spec: Visualization }) {
   const index = (field: string | null) => result.columns.indexOf(field || '')
@@ -34,24 +34,33 @@ export function App() {
   const [query, setQuery] = useState<QueryResponse | null>(null)
   const [queryBusy, setQueryBusy] = useState(false)
   const [queryError, setQueryError] = useState('')
+  const [authRequired, setAuthRequired] = useState(false)
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [history, setHistory] = useState<HistoryItem[]>([])
+  const [conversationId, setConversationId] = useState('')
+  const [feedbackComment, setFeedbackComment] = useState('')
+  const [feedbackStatus, setFeedbackStatus] = useState('')
   const queryRun = useRef(0)
 
   useEffect(() => {
     let active = true
     setLoading(true)
-    api.datasets().then(data => { if (active) setDatasets(data) }).catch(e => { if (active) setError(e.message) }).finally(() => { if (active) setLoading(false) })
+    api.datasets().then(data => { if (active) { setDatasets(data); setAuthRequired(false) } }).catch(e => { if (active) { if (e.message === 'Sign in to continue') setAuthRequired(true); else setError(e.message) } }).finally(() => { if (active) setLoading(false) })
     return () => { active = false }
   }, [retry])
 
   useEffect(() => {
-    if (!selected) { queryRun.current += 1; setSchema(null); setQuery(null); setQueryBusy(false); return }
+    if (!selected) { queryRun.current += 1; setSchema(null); setQuery(null); setQueryBusy(false); setHistory([]); setConversationId(''); return }
     let active = true
     queryRun.current += 1
     setQueryBusy(false)
     setSchema(null)
     setQuery(null)
+    setConversationId('')
     setError('')
     api.schema(selected).then(data => { if (active) setSchema(data) }).catch(e => { if (active) setError(e.message) })
+    api.history(selected).then(data => { if (active) setHistory(data) }).catch(() => { if (active) setHistory([]) })
     return () => { active = false }
   }, [selected, retry])
 
@@ -75,13 +84,41 @@ export function App() {
     setQueryError('')
     setQuery(null)
     const run = ++queryRun.current
-    try { const response = await api.query({ dataset_id: selected, question: question.trim(), max_rows: 1000, visualize: true }); if (run === queryRun.current) setQuery(response) }
+    try { const response = await api.query({ dataset_id: selected, question: question.trim(), conversation_id: conversationId || undefined, max_rows: 1000, visualize: true }); if (run === queryRun.current) { setQuery(response); if (response.conversation_id) setConversationId(response.conversation_id); void api.history(selected).then(setHistory) } }
     catch (e) { if (run === queryRun.current) setQueryError(e instanceof Error ? e.message : 'Query failed') }
     finally { if (run === queryRun.current) setQueryBusy(false) }
   }
 
+  async function signIn() {
+    try { await api.login(email, password); setPassword(''); setError(''); setAuthRequired(false); setRetry(value => value + 1) }
+    catch (e) { setError(e instanceof Error ? e.message : 'Sign in failed') }
+  }
+
+  async function showHistory(id: string) {
+    try { const detail = await api.detail(id); setQuestion(detail.question); setQuery(detail.response); setConversationId(detail.response.conversation_id || '') }
+    catch (e) { setQueryError(e instanceof Error ? e.message : 'History unavailable') }
+  }
+
+  async function exportQuery(format: 'csv' | 'xlsx') {
+    if (!query) return
+    try {
+      const blob = await api.export(query.query_id, format)
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url; link.download = `query_${query.query_id}.${format}`; link.click(); URL.revokeObjectURL(url)
+    } catch (e) { setQueryError(e instanceof Error ? e.message : 'Export failed') }
+  }
+
+  async function sendFeedback(label: string) {
+    if (!query) return
+    try { await api.feedback(query.query_id, label, feedbackComment); setFeedbackStatus('Feedback saved.'); setFeedbackComment('') }
+    catch (e) { setFeedbackStatus(e instanceof Error ? e.message : 'Feedback failed') }
+  }
+
   return <main>
-    <header><h1>DataTrust</h1><p>Grounded analytics</p></header>
+    <header><h1>DataTrust</h1><p>Grounded analytics</p>{api.hasToken() && <button onClick={() => { api.logout(); setSelected(''); setDatasets([]); setAuthRequired(true) }}>Sign out</button>}</header>
+    {authRequired && <section aria-labelledby="login-heading"><h2 id="login-heading">Sign in</h2><label>Email<input type="email" value={email} onChange={e => setEmail(e.target.value)} /></label><label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} /></label><button onClick={() => void signIn()}>Sign in</button>{error && <p role="alert" className="error">{error}</p>}</section>}
+    {!authRequired && <>
     <section aria-labelledby="datasets-heading">
       <h2 id="datasets-heading">Datasets</h2>
       <label className="upload">Upload CSV or Parquet<input type="file" accept=".csv,.parquet" disabled={uploading} onChange={e => { void upload(e.target.files?.[0]); e.target.value = '' }} /></label>
@@ -100,6 +137,7 @@ export function App() {
     {schema && <section aria-labelledby="query-heading">
       <h2 id="query-heading">Ask about {schema.dataset.name}</h2>
       <label>Question<textarea value={question} onChange={e => setQuestion(e.target.value)} maxLength={2000} placeholder="What were the top regions by revenue?" /></label>
+      {conversationId && <p>Continuing this conversation. <button onClick={() => setConversationId('')}>Start a new conversation</button></p>}
       <button disabled={queryBusy || !question.trim()} onClick={() => void submitQuery()}>Run verified query</button>
       {queryBusy && <p role="status">Running the query pipeline…</p>}
       {queryError && <p role="alert" className="error">{queryError}</p>}
@@ -114,9 +152,13 @@ export function App() {
         {query.sql && <details><summary>{query.status === 'verified' ? 'Executed SQL' : 'Blocked SQL'}</summary><pre>{query.sql}</pre></details>}
         {query.result && query.visualization && <Chart result={query.result} spec={query.visualization} />}
         {query.result && <><ResultTable result={query.result} />{query.result.truncated && <p>Results truncated at the requested row limit.</p>}</>}
+        {query.status === 'verified' && <p><button onClick={() => void exportQuery('csv')}>Export CSV</button> <button onClick={() => void exportQuery('xlsx')}>Export XLSX</button></p>}
+        {query.status === 'verified' && <div><label>Feedback comment<input value={feedbackComment} onChange={e => setFeedbackComment(e.target.value)} maxLength={2000} /></label><button onClick={() => void sendFeedback('correct')}>Correct</button> <button onClick={() => void sendFeedback('partially_correct')}>Partly correct</button> <button onClick={() => void sendFeedback('incorrect')}>Incorrect</button>{feedbackStatus && <p role="status">{feedbackStatus}</p>}</div>}
         {query.evidence && <details><summary>Retrieved evidence ({query.evidence.documents.length})</summary><ul>{query.evidence.documents.map(d => <li key={d.document_id}><strong>{d.object_type}: {d.column_name || d.table_name}</strong> · score {d.score} · {d.content}</li>)}</ul></details>}
         <details><summary>Pipeline stages ({query.metadata.latency_ms} ms)</summary><ol>{query.metadata.stages.map((s, i) => <li key={i}>{s.name}: {s.duration_ms} ms</li>)}</ol></details>
       </div>}
     </section>}
+    {schema && <section aria-labelledby="history-heading"><h2 id="history-heading">Query history</h2>{history.length ? <ul>{history.map(item => <li key={item.query_id}><button onClick={() => void showHistory(item.query_id)}>{item.question}</button> · {item.status}</li>)}</ul> : <p>No queries yet.</p>}</section>}
+    </>}
   </main>
 }

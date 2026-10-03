@@ -1,0 +1,7 @@
+# Authentication and authorization
+
+Development defaults to `AUTH_ENABLED=false` for compatibility with local single-user usage. `APP_ENV=production` refuses to start unless auth is enabled. With auth enabled, provide `ADMIN_EMAIL` and a password of at least 12 characters through environment or secret management. Startup seeds the first admin if absent. `POST /api/auth/login` verifies PBKDF2-HMAC-SHA256 password hashes and issues a random bearer token. Only its SHA-256 digest is stored in DuckDB, with a 12-hour expiry. `POST /api/auth/logout` revokes it. Admins can create users and grant dataset access.
+
+Roles are `admin` and `user`. A user sees owned or explicitly granted datasets; admins see all. Dataset upload records an owner. Dataset list, schema, query, SQL validation, history, detail, feedback and export apply server-side checks. Cache and conversation entries are scoped to the authenticated user. The query route checks permission before the orchestrator obtains the selected catalog, so SQLGuard's table allow-list reflects an authorized dataset. Legacy datasets with no owner remain admin-only when auth is enabled.
+
+The application does not bundle TLS termination, login rate limiting, password reset, an identity provider, or session management across a replicated cluster. Use a protected deployment edge and persistent DuckDB storage. Never commit passwords or tokens; the example environment file leaves them blank. Tests cover login, missing auth, dataset grants, cross-user history/detail/export/feedback isolation, and admin metrics access.

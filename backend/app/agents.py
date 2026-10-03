@@ -45,6 +45,12 @@ class PlannerAgent:
         context = {'dataset': catalog.dataset.name, 'table': catalog.table.name, 'columns': [{'name': c.name, 'type': c.dtype} for c in catalog.table.columns[:100]], 'max_rows': max_rows}
         return self.llm.generate_structured(PLANNER_RULES, f'CATALOG: {json.dumps(context)}\nQUESTION: {question}', PlannerResult)
 
+    def run_follow_up(self, question: str, previous: PlannerResult, catalog: DatasetSchema, max_rows: int, query_id: str) -> PlannerResult:
+        context = {'dataset': catalog.dataset.name, 'table': catalog.table.name,
+                   'columns': [{'name': c.name, 'type': c.dtype} for c in catalog.table.columns[:100]],
+                   'max_rows': max_rows, 'previous_plan': previous.model_dump(), 'follow_up': question}
+        return self.llm.generate_structured(PLANNER_RULES + '\nModify the previous structured plan for the follow-up. Preserve unaffected measures, filters and dimensions.', json.dumps(context), PlannerResult)
+
 
 class SQLAgent:
     def __init__(self, llm: LLMClient):

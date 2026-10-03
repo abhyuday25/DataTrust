@@ -11,7 +11,7 @@ def profile_result(result: ExecutionResult) -> ResultProfile:
     for index, name in enumerate(result.columns):
         values = [row[index] for row in result.rows if row[index] is not None]
         numeric = bool(values) and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in values)
-        temporal = bool(values) and all(isinstance(v, str) and re.match(r'^\d{4}-\d{2}-\d{2}', v) for v in values)
+        temporal = bool(values) and all(isinstance(v, str) and re.match(r'^\d{4}-\d{2}(?:-\d{2})?', v) for v in values)
         role = 'measure' if numeric else 'temporal' if temporal else 'dimension'
         columns.append(ResultColumnProfile(name=name, type=type(values[0]).__name__ if values else 'unknown',
             role=role, distinct_count=len({str(v) for v in values}), null_count=result.row_count - len(values),

@@ -1,0 +1,7 @@
+# Semantic cache
+
+`StateStore` stores only successful, verified analytical responses with materialized rows. Empty verified results are eligible. Normalization trims, collapses whitespace, and case-folds the question; the existing `EmbeddingProvider` produces the candidate vector. A simple scan of the newest 500 entries per user/dataset/model/row policy computes cosine similarity. This is the Ponytail ceiling: add a separate vector index only when volume requires it.
+
+**Semantic similarity alone does not create a valid cache hit.** The entry must also match current user, dataset ID, dataset version, schema hash, embedding model, `max_rows`, visualization request, configured similarity threshold, and unexpired TTL. The stored JSON is parsed into `QueryResponse` and must still be verified with an approved validation and result. Expired rows are removed on writes; stale version/schema entries are rejected on reads. `CACHE_SIMILARITY_THRESHOLD` and `CACHE_TTL_SECONDS` are typed settings.
+
+Cache hits return stored rows and a new query ID; cached SQL is not executed. If a future design reexecutes it, it must pass the current SQLGuard. Cache is scoped per user, and the HTTP route checks current dataset permission before lookup. Metrics count hits/misses and log candidate similarity without logging embeddings. Tests cover hit, low similarity, version/schema mismatch, expiry, authorization and no executor call on a hit.

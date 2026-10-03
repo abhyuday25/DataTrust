@@ -37,3 +37,19 @@ test('submits a typed natural-language query', async () => {
   }
   assert.equal((await api.query({ dataset_id: 'abc', question: 'Top regions by revenue' })).status, 'verified')
 })
+
+test('uses a login token for history and feedback', async () => {
+  globalThis.fetch = async (url, options = {}) => {
+    if (url === '/api/auth/login') return { ok: true, json: async () => ({ access_token: 'test-token' }) }
+    assert.equal(options.headers.Authorization, 'Bearer test-token')
+    if (url.startsWith('/api/history')) return { ok: true, json: async () => [{ query_id: 'q1' }] }
+    if (url === '/api/query/q1/feedback') return { ok: true, json: async () => ({ status: 'recorded' }) }
+    if (url === '/api/auth/logout') return { ok: true, json: async () => ({ status: 'signed_out' }) }
+    throw new Error(url)
+  }
+  await api.login('one@example.com', 'password')
+  assert.equal((await api.history('abc'))[0].query_id, 'q1')
+  assert.equal((await api.feedback('q1', 'correct', 'good')).status, 'recorded')
+  api.logout()
+  assert.equal(api.hasToken(), false)
+})

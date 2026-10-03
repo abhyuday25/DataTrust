@@ -15,6 +15,8 @@ from app.result_ops import profile_result, plan_visualization
 from app.schemas import DatasetSchema
 from app.service import DatasetService
 from app.sql_guard import SQLGuard
+from app.state import ConversationState, StateStore
+from app.metrics import Metrics
 
 
 class PipelineFailure(Exception):
@@ -35,15 +37,16 @@ def check_plan(plan, catalog: DatasetSchema, max_rows: int | None = None):
 
 
 class QueryOrchestrator:
-    def __init__(self, datasets: DatasetService, router: RouterAgent, planner: PlannerAgent, retriever: RagIndex, sql_agent: SQLAgent, settings: Settings):
+    def __init__(self, datasets: DatasetService, router: RouterAgent, planner: PlannerAgent, retriever: RagIndex, sql_agent: SQLAgent, settings: Settings, store: StateStore | None = None, metrics: Metrics | None = None):
         self.datasets, self.router, self.planner = datasets, router, planner
         self.retriever, self.sql_agent, self.settings = retriever, sql_agent, settings
         self.guard = SQLGuard()
         self.executor = ReadOnlyExecutor(settings.duckdb_path, settings.query_timeout_seconds)
         self.repair = RepairAgent(sql_agent.llm)
         self.synthesizer = Synthesizer(sql_agent.llm)
+        self.store, self.metrics = store, metrics
 
-    def run(self, request: QueryRequest, request_id: str | None = None) -> QueryResponse:
+    def run(self, request: QueryRequest, request_id: str | None = None, user_id: str = 'local') -> QueryResponse:
         if request.max_rows > self.settings.max_result_rows:
             raise ApiError(422, 'max_rows_exceeded', 'max_rows exceeds server limit')
         if not request.question.strip():
@@ -67,13 +70,15 @@ class QueryOrchestrator:
             finally:
                 duration = round((perf_counter() - begin) * 1000, 2)
                 stages.append(PipelineStage(name=name, duration_ms=duration))
+                if self.metrics:
+                    self.metrics.observe(name, duration)
                 logging.info(json.dumps({'event': 'query_stage', 'query_id': query_id, 'request_id': request_id, 'dataset_id': request.dataset_id, 'stage': name, 'duration_ms': duration}))
 
         try:
             route = stage('routing', lambda: self.router.run(request.question, query_id))
             response.route = route
             logging.info(json.dumps({'event': 'query_route', 'query_id': query_id, 'dataset_id': request.dataset_id, 'route': route.route.value}))
-            if route.route == Route.follow_up:
+            if route.route == Route.follow_up and not request.conversation_id:
                 response.status = 'needs_context'
                 response.error = QueryError(code='conversation_unavailable', message='Follow-up questions need prior conversation context')
             elif route.route in (Route.unsupported, Route.general_question):
@@ -85,7 +90,33 @@ class QueryOrchestrator:
                 response.answer = 'Columns in ' + catalog.dataset.name + ': ' + ', '.join(f'{c.name} ({c.dtype})' for c in catalog.table.columns[:100])
                 response.status = 'completed'
             else:
-                plan = stage('planning', lambda: self.planner.run(request.question, catalog, min(request.max_rows, self.settings.max_result_rows), query_id))
+                previous = None
+                if request.conversation_id:
+                    if not self.store:
+                        raise PipelineFailure('conversation_unavailable', 'Conversation state is unavailable')
+                    previous = stage('conversation', lambda: self.store.conversation(request.conversation_id, user_id, catalog))
+                vector = None
+                if self.store and previous is None:
+                    vector = stage('cache', lambda: self.retriever.embeddings.embed_batch([request.question])[0])
+                    cached, cache_status, similarity = stage('cache', lambda: self.store.cache_find(user_id, catalog, vector, self.retriever.embeddings.model, request.max_rows, request.visualize))
+                    logging.info(json.dumps({'event': 'query_cache', 'query_id': query_id, 'dataset_id': request.dataset_id, 'status': cache_status, 'similarity': round(similarity, 4)}))
+                    if self.metrics:
+                        self.metrics.count('cache_hits' if cached else 'cache_misses')
+                    if cached:
+                        response = cached.model_copy(deep=True)
+                        response.query_id = query_id
+                        response.metadata = QueryMetadata(latency_ms=round((perf_counter() - started) * 1000, 2), stages=stages, cache_hit=True)
+                        if response.plan:
+                            state = ConversationState(last_question=request.question, last_plan=response.plan,
+                                last_sql=response.sql or '', result_columns=response.result.columns, visualization=response.visualization.type if response.visualization else None)
+                            response.conversation_id = self.store.save_conversation(user_id, catalog, state)
+                        self.store.save_query(user_id, request.dataset_id, request.question, response)
+                        if self.metrics:
+                            self.metrics.count('successful_queries')
+                            self.metrics.observe('total', response.metadata.latency_ms)
+                        logging.info(json.dumps({'event': 'query_finished', 'query_id': query_id, 'request_id': request_id, 'dataset_id': request.dataset_id, 'status': response.status, 'cache_hit': True, 'latency_ms': response.metadata.latency_ms}))
+                        return response
+                plan = stage('planning', lambda: self.planner.run_follow_up(request.question, previous.last_plan, catalog, min(request.max_rows, self.settings.max_result_rows), query_id) if previous else self.planner.run(request.question, catalog, min(request.max_rows, self.settings.max_result_rows), query_id))
                 response.plan = plan
                 stage('validation', lambda: check_plan(plan, catalog, request.max_rows))
                 retrieval_query = ' '.join([request.question, *plan.dimensions, *(m.field for m in plan.measures), *(f.field for f in plan.filters)])
@@ -118,6 +149,12 @@ class QueryOrchestrator:
                 response.answer, response.findings, response.assumptions = synthesis.answer, synthesis.findings, synthesis.assumptions
                 response.visualization = stage('visualization', lambda: plan_visualization(result, response.result_profile, request.visualize or route.requires_visualization))
                 response.status = 'verified'
+                if self.store:
+                    state = ConversationState(last_question=request.question, last_plan=plan, last_sql=response.sql,
+                        result_columns=result.columns, visualization=response.visualization.type)
+                    response.conversation_id = stage('conversation', lambda: self.store.save_conversation(user_id, catalog, state, request.conversation_id))
+                    if vector is not None:
+                        stage('cache', lambda: self.store.cache_store(user_id, catalog, request.question, vector, self.retriever.embeddings.model, request.max_rows, request.visualize, response))
         except ProviderError as exc:
             response.error = QueryError(code=exc.code, message='AI provider is unavailable or returned invalid output')
         except PipelineFailure as exc:
@@ -125,5 +162,15 @@ class QueryOrchestrator:
         except (OSError, RuntimeError, ValueError):
             response.error = QueryError(code='retrieval_unavailable', message='Retrieval is unavailable')
         response.metadata = QueryMetadata(latency_ms=round((perf_counter() - started) * 1000, 2), stages=stages, repair_attempts=repair_attempts)
+        if self.metrics:
+            self.metrics.count('successful_queries' if response.status == 'verified' else 'failed_queries')
+            self.metrics.count('repair_attempts', repair_attempts)
+            if repair_attempts and response.status == 'verified':
+                self.metrics.count('repair_successes')
+            if response.validation and response.validation.status == 'rejected':
+                self.metrics.count('security_rejections')
+            self.metrics.observe('total', response.metadata.latency_ms)
+        if self.store:
+            self.store.save_query(user_id, request.dataset_id, request.question, response)
         logging.info(json.dumps({'event': 'query_finished', 'query_id': query_id, 'request_id': request_id, 'dataset_id': request.dataset_id, 'status': response.status, 'latency_ms': response.metadata.latency_ms}))
         return response

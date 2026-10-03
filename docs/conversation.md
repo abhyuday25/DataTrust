@@ -1,0 +1,5 @@
+# Structured conversations
+
+A verified query saves a `ConversationState`: last question, typed plan, SQL, result column names, and visualization. It is persisted in DuckDB with conversation ID, user ID, dataset ID, dataset version, schema hash and update time. The API returns `conversation_id`; send it with a follow-up question. The Planner receives the previous typed plan, current catalog, and new question, then proposes a modified plan. Plan grounding, retrieval, SQL generation, the same SQLGuard, and read-only execution follow normally.
+
+“Now only South” should add a region filter while preserving the measure and year filter; “Break that down by month” should replace the grouping; “Make it a line chart” should update visualization intent. A deterministic fake-provider test verifies this state evolution. Missing IDs return `needs_context`; unknown or other-user IDs return 404; a different dataset/version/schema returns 409. There is no raw-chat replay or permanent SQL approval. Creating a new conversation omits `conversation_id`.

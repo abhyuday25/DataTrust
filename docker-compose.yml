@@ -11,6 +11,12 @@ services:
       LLM_MODEL: ${LLM_MODEL:-}
       OLLAMA_BASE_URL: ${OLLAMA_DOCKER_BASE_URL:-http://host.docker.internal:11434}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      APP_ENV: ${APP_ENV:-development}
+      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      CACHE_SIMILARITY_THRESHOLD: ${CACHE_SIMILARITY_THRESHOLD:-0.92}
+      CACHE_TTL_SECONDS: ${CACHE_TTL_SECONDS:-3600}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -20,3 +26,11 @@ services:
     build: ./frontend
     ports: ["8080:80"]
     depends_on: [backend]
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    ports: ["11434:11434"]
+    volumes:
+      - ollama_models:/root/.ollama
+volumes:
+  ollama_models:

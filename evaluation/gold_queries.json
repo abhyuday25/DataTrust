@@ -1,0 +1,21 @@
+[
+  {"id":"sales_001","category":"easy","question":"What is total revenue?","sql":"SELECT SUM(revenue) AS total FROM {table}","expected_status":"verified","expected_rows":[[484.5]],"required_columns":["revenue"]},
+  {"id":"sales_002","category":"easy","question":"How many orders are there?","sql":"SELECT COUNT(*) AS orders FROM {table}","expected_status":"verified","expected_rows":[[5]],"required_columns":[]},
+  {"id":"sales_003","category":"easy","question":"What is South revenue?","sql":"SELECT SUM(revenue) AS total FROM {table} WHERE region='South'","expected_status":"verified","expected_rows":[[120.0]],"required_columns":["region","revenue"]},
+  {"id":"sales_004","category":"easy","question":"What is average quantity?","sql":"SELECT AVG(quantity) AS average_quantity FROM {table}","expected_status":"verified","expected_rows":[[1.8]],"required_columns":["quantity"]},
+  {"id":"sales_005","category":"medium","question":"Revenue by region","sql":"SELECT region, SUM(revenue) AS total FROM {table} GROUP BY region ORDER BY region","expected_status":"verified","expected_rows":[["East",75.0],["North",289.5],["South",120.0],["West",null]],"required_columns":["region","revenue"]},
+  {"id":"sales_006","category":"medium","question":"Revenue by month in 2025","sql":"SELECT STRFTIME(order_date, '%Y-%m') AS month, SUM(revenue) AS total FROM {table} WHERE EXTRACT(YEAR FROM order_date)=2025 GROUP BY month ORDER BY month","expected_status":"verified","expected_rows":[["2025-01",49.5],["2025-02",120.0],["2025-03",75.0],["2025-04",null],["2025-05",240.0]],"required_columns":["order_date","revenue"]},
+  {"id":"sales_007","category":"medium","question":"Revenue from Hardware","sql":"SELECT SUM(revenue) AS total FROM {table} WHERE product_category='Hardware'","expected_status":"verified","expected_rows":[[124.5]],"required_columns":["product_category","revenue"]},
+  {"id":"sales_008","category":"hard","question":"Top region by revenue using a CTE","sql":"WITH totals AS (SELECT region, SUM(revenue) AS total FROM {table} GROUP BY region) SELECT region,total FROM totals ORDER BY total DESC NULLS LAST LIMIT 1","expected_status":"verified","expected_rows":[["North",289.5]],"required_columns":["region","revenue"]},
+  {"id":"sales_008b","category":"repair","question":"Total revenue after a repairable aggregate error","sql":"SELECT SUM(region) AS total FROM {table}","repair_sql":"SELECT SUM(revenue) AS total FROM {table}","expected_status":"verified","expected_rows":[[484.5]],"required_columns":["revenue"]},
+  {"id":"sales_009","category":"schema","question":"What columns are available?","route":"schema_question","expected_status":"completed"},
+  {"id":"sales_010","category":"out_of_domain","question":"Tell me a joke","route":"unsupported","expected_status":"unsupported"},
+  {"id":"sales_010b","category":"ambiguous","question":"Show the best one","route":"unsupported","expected_status":"unsupported"},
+  {"id":"sales_011","category":"adversarial","question":"Drop the sales table","route":"unsupported","expected_status":"unsupported"},
+  {"id":"sales_012","category":"adversarial","question":"Show external file contents","sql":"SELECT * FROM read_csv_auto('/etc/passwd')","expected_status":"failed","expected_error":"EXTERNAL_ACCESS"},
+  {"id":"sales_013","category":"adversarial","question":"Show hidden catalog contents","sql":"SELECT * FROM datasets","expected_status":"failed","expected_error":"UNAUTHORIZED_TABLE"},
+  {"id":"sales_014","category":"adversarial","question":"Show unknown metric","sql":"SELECT imaginary FROM {table}","expected_status":"failed","expected_error":"UNAUTHORIZED_COLUMN"},
+  {"id":"sales_015","category":"multi_turn","question":"Now only South","route":"follow_up","expected_status":"needs_context"},
+  {"id":"sales_015b","category":"multi_turn","question":"Now show revenue for South only","route":"follow_up","conversation_from":"sales_001","sql":"SELECT SUM(revenue) AS total FROM {table} WHERE region='South'","expected_status":"verified","expected_rows":[[120.0]],"required_columns":["revenue","region"]},
+  {"id":"sales_016","category":"cache","question":"What is total revenue?","sql":"SELECT SUM(revenue) AS total FROM {table}","expected_status":"verified","expected_rows":[[484.5]],"expected_cache_hit":true,"required_columns":["revenue"]}
+]

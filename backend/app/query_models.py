@@ -101,7 +101,7 @@ class QueryRequest(StrictModel):
 
 
 class PipelineStage(StrictModel):
-    name: Literal['routing', 'planning', 'retrieval', 'sql_generation', 'validation', 'execution', 'repair', 'result_profiling', 'synthesis', 'visualization', 'completed', 'failed']
+    name: Literal['routing', 'planning', 'retrieval', 'sql_generation', 'validation', 'execution', 'repair', 'result_profiling', 'synthesis', 'visualization', 'cache', 'conversation', 'completed', 'failed']
     duration_ms: float
 
 
@@ -147,6 +147,7 @@ class Synthesis(StrictModel):
 
 class QueryResponse(StrictModel):
     query_id: str
+    conversation_id: str | None = None
     status: Literal['verified', 'completed', 'failed', 'needs_context', 'unsupported']
     route: RouterResult | None = None
     plan: PlannerResult | None = None

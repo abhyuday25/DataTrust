@@ -27,9 +27,14 @@ class DatasetService:
     def __init__(self, db: Database, settings: Settings):
         self.db, self.settings = db, settings
 
-    def list(self) -> list[DatasetSummary]:
+    def list(self, user_id: str | None = None, admin: bool = True) -> list[DatasetSummary]:
         with self.db.connection() as con:
-            rows = con.execute('SELECT id,name,version,schema_hash,row_count,created_at,updated_at FROM datasets ORDER BY created_at DESC').fetchall()
+            if admin:
+                rows = con.execute('SELECT id,name,version,schema_hash,row_count,created_at,updated_at FROM datasets ORDER BY created_at DESC').fetchall()
+            else:
+                rows = con.execute('''SELECT id,name,version,schema_hash,row_count,created_at,updated_at FROM datasets
+                    WHERE owner_id=? OR id IN (SELECT dataset_id FROM dataset_permissions WHERE user_id=?)
+                    ORDER BY created_at DESC''', [user_id, user_id]).fetchall()
         return [DatasetSummary.model_validate(dict(zip(DatasetSummary.model_fields, row))) for row in rows]
 
     def schema(self, dataset_id: str) -> DatasetSchema:
@@ -40,7 +45,7 @@ class DatasetService:
         id_, name, version, hash_, table_name, count, created, updated, columns, warnings = row
         return DatasetSchema(dataset=DatasetSummary(id=id_, name=name, version=version, schema_hash=hash_, row_count=count, created_at=created, updated_at=updated), table=TableMetadata(name=table_name, row_count=count, columns=[ColumnMetadata.model_validate(c) for c in json.loads(columns)]), warnings=json.loads(warnings))
 
-    async def upload(self, file: UploadFile) -> DatasetSchema:
+    async def upload(self, file: UploadFile, owner_id: str = 'local') -> DatasetSchema:
         original = Path((file.filename or '').replace('\\', '/')).name
         suffix = Path(original).suffix.lower()
         reader_for(Path('upload' + suffix))
@@ -64,7 +69,7 @@ class DatasetService:
             if size == 0:
                 raise ApiError(422, 'empty_file', 'File is empty')
             with self.db.connection() as con:
-                if con.execute('SELECT 1 FROM datasets WHERE lower(name)=lower(?)', [name]).fetchone():
+                if con.execute('SELECT 1 FROM datasets WHERE lower(name)=lower(?) AND owner_id=?', [name, owner_id]).fetchone():
                     raise ApiError(409, 'duplicate_name', 'A dataset with this name already exists')
                 try:
                     con.execute('BEGIN TRANSACTION')
@@ -77,7 +82,7 @@ class DatasetService:
                     count = con.execute(f'SELECT COUNT(*) FROM {quote(table_name)}').fetchone()[0]
                     metadata, warnings = self._profile(con, table_name, columns, count)
                     now = datetime.now(timezone.utc)
-                    con.execute('INSERT INTO datasets VALUES (?,?,?,?,?,?,?,?,?,?)', [dataset_id, name, digest.hexdigest(), schema_hash(columns), table_name, count, now, now, json.dumps(metadata, default=str), json.dumps(warnings)])
+                    con.execute('INSERT INTO datasets (id,name,version,schema_hash,table_name,row_count,created_at,updated_at,columns_json,warnings_json,owner_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)', [dataset_id, name, digest.hexdigest(), schema_hash(columns), table_name, count, now, now, json.dumps(metadata, default=str), json.dumps(warnings), owner_id])
                     con.execute('COMMIT')
                 except Exception:
                     con.execute('ROLLBACK')

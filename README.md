@@ -1,6 +1,6 @@
 # DataTrust
 
-DataTrust runs natural-language analytics over uploaded CSV and Parquet datasets. A local Ollama model proposes SQL; an AST guard decides whether it may execute in read-only DuckDB.
+DataTrust runs verified natural-language analytics over uploaded CSV and Parquet datasets. A local Ollama model proposes SQL; an AST guard decides whether it may execute in read-only DuckDB. Unlike a text-to-SQL demo, the result is tied to catalog evidence, execution checks, bounded repair, and inspectable rows.
 
 ## 🚀 Quick Start
 
@@ -8,6 +8,7 @@ DataTrust runs natural-language analytics over uploaded CSV and Parquet datasets
 - Python 3.12+
 - Node 22+
 - [Ollama](https://ollama.com/) with a chat model and an embedding model installed locally
+- Docker Compose, if using containers
 
 ### Local Development
 
@@ -46,6 +47,8 @@ docker compose up --build
 
 The first query automatically builds a FAISS index for the dataset. Subsequent queries reuse this index if the dataset version, schema hash, and embedding model match.
 
+After a verified query, type a follow-up such as “Now only South” using the returned conversation. The workspace lists authorized history, feedback controls, and CSV/XLSX exports. Successful analytical results can be reused from the per-user semantic cache only when dataset ID, version, schema hash, model, row policy, and TTL still match. Cached rows are materialized; cached SQL is never executed directly.
+
 ## 🧠 Architecture Overview
 
 ### Phase 1: Dataset Registration
@@ -62,6 +65,12 @@ The first query automatically builds a FAISS index for the dataset. Subsequent q
 - Read-only DuckDB executor with disabled external access, timeout and row cap
 - Up to two guarded repairs after repairable execution errors
 - Result profiling, grounded synthesis, and deterministic charts
+
+### Phase 4: State and operations
+- Structured follow-up plans, persistent query history, feedback, and exports
+- Per-user materialized semantic cache with version/schema/TTL checks
+- Optional login with hashed passwords, expiring server-side bearer sessions, and dataset grants; `APP_ENV=production` requires `AUTH_ENABLED=true`
+- Safe metrics, a 19-case scripted pipeline benchmark, Docker Compose, and CI
 
 ## ⚙️ AI Configuration
 
@@ -98,10 +107,6 @@ RAG_TOP_K=5                      # Number of retrieval results
 - The thread cancellation timeout interrupts DuckDB where possible; a native operation that ignores interruption can outlive the response briefly
 - Synthesis checks numerical claims, but cannot prove every natural-language statement; inspect the returned rows and SQL for important decisions
 
-### Planned Phase 4
-
-Semantic cache, conversation follow-ups, query history, authentication, evaluation and production deployment work are planned for Phase 4.
-
 ### Security Features:
 - Stream uploads with size limits (`MAX_UPLOAD_MB`)
 - Fixed CSV/Parquet readers
@@ -112,7 +117,7 @@ Semantic cache, conversation follow-ups, query history, authentication, evaluati
 - DuckDB and uploaded files must persist together
 - Profiling uses max 10,000 rows per column
 - Local Ollama receives bounded metadata and result rows
-- **Do not expose directly to untrusted internet traffic**
+- Put a TLS reverse proxy and rate limiting in front of production traffic; neither is bundled here
 
 ## 🧪 Testing & Documentation
 
@@ -126,7 +131,12 @@ python -m pytest tests -q
 cd frontend
 npm test
 npm run build  # Includes TypeScript checking
+
+# From repository root: scripted fake-provider pipeline evaluation
+python evaluation/run_eval.py
 ```
+
+The benchmark writes `evaluation/reports/latest.json`. It measures the real guard and executor with scripted model outputs; it does not measure Ollama answer quality. CI runs these checks without a live model. Docker Compose can use host Ollama (default) or its optional `ollama` profile; see [deployment](docs/deployment.md).
 
 ### Documentation
 See detailed docs for:
@@ -140,3 +150,9 @@ See detailed docs for:
 - [Security](docs/security.md)
 - [Local LLM Provider](docs/llm-providers.md)
 - [Repair Loop](docs/repair-loop.md)
+- [Cache](docs/cache.md)
+- [Conversations](docs/conversation.md)
+- [Authentication and Authorization](docs/authentication-authorization.md)
+- [Evaluation](docs/evaluation.md)
+- [Observability](docs/observability.md)
+- [Deployment](docs/deployment.md)

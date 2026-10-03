@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     max_result_rows: int = Field(default=10000, ge=1)
     query_timeout_seconds: int = Field(default=10, ge=1)
     max_repair_attempts: int = Field(default=2, ge=0, le=2)
+    cache_similarity_threshold: float = Field(default=0.92, ge=0, le=1)
+    cache_ttl_seconds: int = Field(default=3600, ge=1)
+    auth_enabled: bool = False
+    admin_email: str = ''
+    admin_password: str = Field(default='', repr=False)
 
 
 class ApiError(Exception):
@@ -43,18 +48,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from app.agents import RouterAgent, PlannerAgent, SQLAgent
     from app.rag import RagIndex
     from app.query_service import QueryOrchestrator
+    from app.auth import AuthService
+    from app.state import StateStore
+    from app.metrics import Metrics
 
     settings = settings or Settings()
+    if settings.app_env.lower() == 'production' and not settings.auth_enabled:
+        raise ValueError('AUTH_ENABLED must be true in production')
     logging.basicConfig(level=logging.INFO, format='%(message)s')
     db = Database(settings.duckdb_path)
     db.initialize()
     app = FastAPI(title='DataTrust', version='0.2.0')
     app.state.settings = settings
     app.state.datasets = DatasetService(db, settings)
+    app.state.auth = AuthService(db, settings)
+    app.state.store = StateStore(db, settings)
+    app.state.metrics = Metrics()
     app.state.query_service = None
     try:
         provider = OllamaProvider(settings)
-        app.state.query_service = QueryOrchestrator(app.state.datasets, RouterAgent(provider), PlannerAgent(provider), RagIndex(settings.faiss_index_path, provider), SQLAgent(provider), settings)
+        app.state.query_service = QueryOrchestrator(app.state.datasets, RouterAgent(provider), PlannerAgent(provider), RagIndex(settings.faiss_index_path, provider), SQLAgent(provider), settings, app.state.store, app.state.metrics)
     except ProviderError:
         pass  # Dataset management remains available without AI credentials.
     app.add_middleware(CORSMiddleware, allow_origins=[x.strip() for x in settings.cors_origins.split(',') if x.strip()], allow_methods=['GET', 'POST'], allow_headers=['*'])
@@ -69,6 +82,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             logging.error(json.dumps({'event': 'request_failed', 'request_id': request_id}))
             response = JSONResponse(status_code=500, content={'error': {'code': 'internal_error', 'message': 'Internal server error', 'request_id': request_id}})
         response.headers['X-Request-ID'] = request_id
+        app.state.metrics.count('requests')
         logging.info(json.dumps({'event': 'request', 'request_id': request_id, 'method': request.method, 'path': request.url.path, 'status': response.status_code}))
         return response
 
