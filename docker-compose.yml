@@ -1,0 +1,21 @@
+services:
+  backend:
+    build: ./backend
+    ports: ["8000:8000"]
+    environment:
+      DUCKDB_PATH: /storage/datatrust.duckdb
+      DATA_DIR: /data/uploads
+      FAISS_INDEX_PATH: /storage/faiss
+      CORS_ORIGINS: http://localhost:5173,http://localhost:8080
+      LLM_PROVIDER: ${LLM_PROVIDER:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+    volumes:
+      - ./storage:/storage
+      - ./data:/data
+  frontend:
+    build: ./frontend
+    ports: ["8080:80"]
+    depends_on: [backend]

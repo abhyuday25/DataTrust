@@ -1,0 +1,6 @@
+order_id,order_date,customer_id,region,product_category,quantity,revenue
+o1,2025-01-04,c1,North,Hardware,2,49.50
+o2,2025-02-12,c2,South,Software,1,120.00
+o3,2025-03-03,c1,East,Hardware,3,75.00
+o4,2025-04-19,c3,West,Services,1,
+o5,2025-05-21,c4,North,Software,2,240.00

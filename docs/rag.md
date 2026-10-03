@@ -1,0 +1,9 @@
+# Schema retrieval
+
+`catalog_documents()` deterministically emits one table document and one per column from the Phase 1 catalog. IDs hash dataset ID, content version, schema hash, object type, table, and column. Documents contain known names, types, row count, optional descriptions, bounded profile statistics, and at most three samples truncated to 64 characters. Missing relationships, metrics, synonyms, and curated examples are omitted rather than fabricated. Add those as catalog-backed document types when curated metadata exists.
+
+`EmbeddingProvider` supplies batch vectors; the OpenAI-compatible implementation uses `EMBEDDING_MODEL` and validates count, dimension, and finite values. Tests use a deterministic four-dimensional fake. Vectors are L2-normalized. FAISS `IndexFlatIP` returns cosine similarity; `RAG_TOP_K` defaults to 5 and is bounded to 20. Retrieved context is capped at 12,000 characters. Returned evidence includes IDs, object names, scores, and bounded content.
+
+The first query for a dataset builds an index under `FAISS_INDEX_PATH/<dataset_id>/` with `index.faiss`, `documents.json`, and `manifest.json`. The manifest records dataset ID/version/schema hash, embedding model/dimension, document count, and creation time. A compatible index reloads. Incompatible or damaged metadata triggers a rebuild; a changed vector dimension at query time fails rather than silently searching. The catalog stays authoritative. Current Phase 1 metadata cannot be edited after upload, so document content changes only with a new dataset version; a future metadata editor should add a catalog-document revision to the manifest.
+
+Retrieved text may contain untrusted descriptions and samples. Prompts label it as data; it cannot override system rules, and no retrieved text is executable. `evaluation/phase2_retrieval.json` lists small expected-object cases. The test suite exercises persistence, reload, and incompatibility with fake embeddings.

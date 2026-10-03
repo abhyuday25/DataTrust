@@ -1,0 +1,10 @@
+.env
+__pycache__/
+.pytest_cache/
+*.pyc
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+**/storage/*.duckdb*
+**/storage/faiss/
+**/data/uploads/

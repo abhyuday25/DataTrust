@@ -1,0 +1,5 @@
+[
+  {"question":"What was total revenue in 2025?","columns":["revenue","order_date"]},
+  {"question":"Top 5 regions by revenue","columns":["region","revenue"]},
+  {"question":"Show monthly revenue for 2025","columns":["order_date","revenue"]}
+]
